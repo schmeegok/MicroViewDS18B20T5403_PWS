@@ -4,12 +4,10 @@
 #include <OneWire.h>
 #include <Wire.h>
 #include <t5403.h>
-#include <EEPROM.h>
 
 #define ONE_WIRE_BUS A0
 
 SoftwareSerial mySerial(0, 1); // RX, TX
-
 
 MicroViewWidget *widget1;
 int16_t prevVal; // previous widget value
@@ -29,21 +27,22 @@ const int BLUE_PIN  = 3; // Common Anode Pinout
 float degF_Out, maxDegF_Out, minDegF_Out;
 
 // Baro Variables
-double relPress, relPressMax, relPressMin, absPress;
+double absPress;
 float baroTemp, baroTempMax, baroTempMin;
-//double baseAltitude_m = 2591.11; //8501 feet Woodland Park
-double baseAltitude_m;// = 2028.00; //6654 feet Colorado Springs
-double altMax_ft, altMin_ft, alt_ft;
-double calFactor = 0.07;
+double baseAltitude_ft;
+double altMax_ft, altMin_ft, alt_ft, altInitial_ft, altAvg_ft;
+bool firstAltMeas;
 
 volatile byte mode = 1; // Variable to hold the display mode
-const byte baroPressMode   = 1;
-const byte altitudeMode    = 2;
-const byte outsideTempMode = 3;
-const byte baroTempMode    = 4;
-const byte numModes = 4;
 
-byte eepromByte;
+const byte altitudeMode    = 1;
+const byte outsideTempMode = 2;
+const byte baroTempMode    = 3;
+const byte lampMode        = 4;
+const byte darkMode        = 5;
+const byte numModes = 5;
+
+byte pixelLoc_x,pixelLoc_y;
 
 void setup() 
 {
@@ -97,64 +96,35 @@ void setup()
   pinMode(button1Pin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(button1Pin), modeChange, RISING);
   
-    
-  
-  baseAltitude_m = 2028.00; //6654 feet Colorado Springs
-
-  eepromByte = EEPROM.read(0);
-  if (eepromByte == 0xFF)
-  {
-    EEPROM.put(0,baseAltitude_m);
-  }
-  else
-  {
-    baseAltitude_m = EEPROM.get(0,baseAltitude_m);
-  }
-
   mode = altitudeMode;
-  
 }
 
 void loop(void) 
 {
     // put your main code here, to run repeatedly:
     int ledIntensity;
-    int attempts = 0;
-    int maxAttempts = 25;    
-
+    
     // Take a temperature every time
     // Take a temperature reading from the DS18B20 Sensor
     sensors.requestTemperatures(); // Send the command to get temperatures
-    //degF_Out = 70.12; // Simulated Value
     degF_Out = sensors.getTempFByIndex(0);  // Device 1 is index 0
     
     // Get the pressure and temperature from the barometer
     baroTemp = barometer.getTemperature(FAHRENHEIT)/100.00;
     absPress = barometer.getPressure(MODE_ULTRA);
 
-    baseAltitude_m = altitude(absPress,101325.000);
-    
-    // Sometime this may return negative values so we only want good values
-    relPress = sealevel_inhg(absPress, baseAltitude_m) - calFactor;
-    //relPress = 30.01; // Simulated Value
-     // Bumped this from 28:32 to 26:34 since travelling down elevation caused way high unajusted pressure
-    while (relPress < 26.00 )
+    altAvg_ft = conv_m_to_ft(altitude(absPress,101325.000));
+    for (int i=0; i<=8; i++)
     {
-        mySerial.print(F("Pressure measurement too low (range 26.00 to 34.00): "));
-        mySerial.print(relPress);
-        mySerial.println(F(" in-hg"));
-        relPress = sealevel_inhg(absPress, baseAltitude_m) - calFactor;
+        barometer.getTemperature(FAHRENHEIT)/100.00; //Tossing out the temp for now, think you must do first though
+        absPress = barometer.getPressure(MODE_ULTRA);
+        altAvg_ft += conv_m_to_ft(altitude(absPress,101325.000));   
     }
-    while (relPress > 34 && attempts < maxAttempts)
+    baseAltitude_ft = altAvg_ft/10.000;
+    if (firstAltMeas == false)
     {
-        mySerial.print(F("Pressure measurement too high (range 26.00 to 34.00): "));
-        mySerial.print(relPress);
-        mySerial.print(F(" in-hg; Retry "));
-        mySerial.print(attempts);
-        mySerial.print(F(" of "));
-        mySerial.println(maxAttempts);
-        relPress = sealevel_inhg(absPress, baseAltitude_m) - calFactor;
-        attempts += 1;
+        altInitial_ft = baseAltitude_ft;
+        firstAltMeas = true;
     }
          
     // Update the maxs
@@ -166,13 +136,9 @@ void loop(void)
     {
         baroTempMax = baroTemp;
     }
-    if (relPress > relPressMax)
+    if (baseAltitude_ft > altMax_ft)
     {
-        relPressMax = relPress;
-    }
-    if (conv_m_to_ft(baseAltitude_m) > altMax_ft)
-    {
-        altMax_ft = conv_m_to_ft(baseAltitude_m);
+        altMax_ft = baseAltitude_ft;
     }
                 
     // Update the mins
@@ -184,13 +150,9 @@ void loop(void)
     {
         baroTempMin = baroTemp;
     }
-    if (relPress < relPressMin)
+    if (baseAltitude_ft < altMin_ft)
     {
-        relPressMin = relPress;
-    }
-    if (conv_m_to_ft(baseAltitude_m) < altMin_ft)
-    {
-        altMin_ft = conv_m_to_ft(baseAltitude_m);
+        altMin_ft = baseAltitude_ft;
     }
     
     // Print to Serial Port
@@ -200,48 +162,43 @@ void loop(void)
     // Mode selection
     switch(mode)
     {
-        // Barometric Pressure Mode: Display the barometric Pressure information
-        case baroPressMode:
-            // Update the microview display
-            uView.clear(PAGE);
-            widget1 = new MicroViewGauge(31, 18, 260, 340, WIDGETSTYLE0 + WIDGETNOVALUE);
-            // draw the fixed "inhg" text
-            uView.setCursor(widget1->getX() - 11, widget1->getY() + 11);
-            uView.print(F("in-hg"));
-
-            uView.setCursor(0,0);
-            uView.setFontType(0);
-            uView.print(F("BP"));
-
-            customGauge0(relPress*10, relPressMin*10, relPressMax*10, 0);
-            //update1widget(relPress*10);
-            uView.display();
-            delete widget1;
-            showTempRGB(relPress);//, TEMP_LIM_LO, TEMP_LIM_HI);
-            break;
-            
         // Altitude Mode: Display the barometric Pressure measured altitude
         case altitudeMode:
             // Update the microview display
             uView.clear(PAGE);
-
-            widget1 = new MicroViewSlider(20, 2, altMin_ft, altMax_ft, WIDGETSTYLE3 + WIDGETNOVALUE);
-            prevVal = widget1->getValue();
-
-            //spin(0, 11, 1, 250, customSlider3);
-
-            //widget1 = new MicroViewGauge(31, 18, 260, 340, WIDGETSTYLE0 + WIDGETNOVALUE);
-            // draw the fixed "ft" text
-            uView.setCursor(widget1->getX() - 15, widget1->getY() + 17);
-            uView.print(F("ft"));
-
-            uView.setCursor(0,0);
+            
+            // Write "Altitude, ft" at the top            
+            uView.setCursor(0, 0);
             uView.setFontType(0);
-            uView.print(F("AT"));
+            uView.print(F("ALT, FT"));
 
-            customSlider3( (int16_t) conv_m_to_ft(baseAltitude_m));
+            // Print the current Altitude Reading
+            uView.setCursor(0,10);
+            uView.setFontType(0);
+            uView.print(F("Ac: "));
+            uView.print((int16_t) baseAltitude_ft);
+
+            // Print the Max Altitude Reading
+            uView.setCursor(0,20);
+            uView.setFontType(0);
+            uView.print(F("Mx: "));
+            uView.print((int16_t) altMax_ft);
+
+            // Print the Min Altitude Reading
+            uView.setCursor(0,30);
+            uView.setFontType(0);
+            uView.print(F("Mn: "));
+            uView.print((int16_t) altMin_ft);
+
+            // Print the Delta Altitude Reading
+            uView.setCursor(0,40);
+            uView.setFontType(0);
+            uView.print(F("Ad: "));
+            uView.print((int16_t) (baseAltitude_ft - altInitial_ft));
+            
             uView.display();
-            delete widget1;
+
+            // Turn off the LED
             analogWrite(RED_PIN, 0);
             analogWrite(BLUE_PIN, 0);
             analogWrite(GREEN_PIN, 0);
@@ -251,7 +208,6 @@ void loop(void)
         case outsideTempMode: // Outdoor Sensor
             // Update the microview display
             uView.clear(PAGE);
-            //widget1 = new MicroViewGauge(35, 17, -200, 1300, WIDGETSTYLE0 + WIDGETNOVALUE);
             widget1 = new MicroViewSlider(18, 20, minDegF_Out*10, maxDegF_Out*10, WIDGETSTYLE0 + WIDGETNOVALUE);
             // draw a fixed "F" text
             uView.setCursor(widget1->getX() + 13, widget1->getY() + 10);
@@ -265,14 +221,13 @@ void loop(void)
             uView.display();
             delete widget1;
 
-            showTempRGB(degF_Out);//, TEMP_LIM_LO, TEMP_LIM_HI);
+            showTempRGB(degF_Out);
             break;
 
         // Barometer Temp Sensor Mode
         case baroTempMode: // Barometer built in temp sensor
             // Update the microview display
             uView.clear(PAGE);
-            //widget1 = new MicroViewGauge(35, 17, -200, 1300, WIDGETSTYLE0 + WIDGETNOVALUE);
             widget1 = new MicroViewSlider(18, 20, baroTempMin*10, baroTempMax*10, WIDGETSTYLE0 + WIDGETNOVALUE);
             // draw a fixed "F" text
             uView.setCursor(widget1->getX() + 13, widget1->getY() + 10);
@@ -286,7 +241,51 @@ void loop(void)
             uView.display();
             delete widget1;
             
-            showTempRGB(baroTemp);//, TEMP_LIM_LO, TEMP_LIM_HI);
+            showTempRGB(baroTemp);
+            break;
+
+        // Lamp Mode: Set the Lamp on and White
+        case lampMode:
+            // Update the microview display
+            uView.clear(PAGE);
+            
+            // Write "Altitude, ft" at the top            
+            uView.setCursor(0, 0);
+            uView.print(F("Lamp Mode"));            
+            uView.display();
+
+            // Turn ON the LED
+            analogWrite(RED_PIN, 255);
+            analogWrite(BLUE_PIN, 255);
+            analogWrite(GREEN_PIN, 255);
+            break;
+
+        // Dark Mode: Set the Lamp off
+        case darkMode:
+            // Update the microview display
+            uView.clear(PAGE);                        
+            uView.display();
+            uView.pixel(pixelLoc_x,pixelLoc_y);            
+            if (pixelLoc_x < 63)
+            {
+                pixelLoc_x += 1;
+            }
+            else
+            {
+                pixelLoc_x = 0;
+                pixelLoc_y += 1;
+            }
+            if (pixelLoc_y > 47)
+            {
+                pixelLoc_y = 0;
+            }
+
+            uView.display();
+            
+            // Turn OFF the LED
+            analogWrite(RED_PIN, 0);
+            analogWrite(BLUE_PIN, 0);
+            analogWrite(GREEN_PIN, 0);
             break;
                     
     }// End Of Switch Case
@@ -318,35 +317,8 @@ void customGauge0(int16_t val, int16_t minVal, int16_t maxVal, uint8_t mainFontS
   {
     uView.setCursor(40,40);
   }
-  //uView.setCursor(40,40);
   uView.print((float)maxVal /10, 1);
 }
-
-// Update function for Altitude (demo 11 with demo 9 values)
-void customSlider3(int16_t val) 
-{
-  int16_t maxVal = widget1->getMaxValue();
-  uint16_t range = (uint16_t) (maxVal - widget1->getMinValue());
-  uint8_t offsetX = widget1->getX() + 9;
-
-  // erase previous value.
-  // pointer position is calculated the same way as the widget code.
-  uint8_t offsetY = (float)(uint16_t)(maxVal - prevVal) / (float)range * 40;
-  uView.setCursor(offsetX, offsetY);
-  uView.print("  "); // This is being lazy. Should calculate width for value.
-
-  // draw new value
-  offsetY = (float)(uint16_t)(maxVal - val) / (float)range * 40;
-  uView.setCursor(offsetX, offsetY);
-  widget1->drawNumValue(val);
-
-  widget1->setValue(val);
-}
-
-/*// Function to update widget1
-void update1widget(int16_t val) {
-  widget1->setValue(val);
-}*/
 
 void showTempRGB(float currentTemp)//, float tempThresholdLo, float tempThresholdHi)
 {
@@ -455,17 +427,8 @@ void sendToSerial()
     mySerial.print(F("TBr="));
     mySerial.print(baroTemp);
     mySerial.print(F("; "));
-    mySerial.print(F("P="));
-    mySerial.print(relPress);
-    mySerial.print(F("; "));
-    mySerial.print(F("P_Min="));
-    mySerial.print(relPressMin);
-    mySerial.print(F("; "));
-    mySerial.print(F("P_Max="));
-    mySerial.print(relPressMax);
-    mySerial.print(F("; "));
     mySerial.print(F("Alt="));
-    mySerial.print(conv_m_to_ft(baseAltitude_m));
+    mySerial.print(baseAltitude_ft);
     mySerial.print(F("; "));
     mySerial.print(F("Alt_Max="));
     mySerial.print(altMax_ft);
@@ -481,19 +444,13 @@ void resetStatistics()
     minDegF_Out = 130;
     baroTempMax = -20;
     baroTempMin = 130;
-    relPressMax = 28.00;
-    relPressMin = 31.00;
 
     altMax_ft = 0;
     altMin_ft = 10000;
+    firstAltMeas = false;
+    pixelLoc_x = 0;
+    pixelLoc_y = 0;
 }
-
-/*void setRGBColor(int redIntensity, int greenIntensity, int blueIntensity)
-{
-  analogWrite(RED_PIN, redIntensity);
-  analogWrite(GREEN_PIN, greenIntensity);
-  analogWrite(BLUE_PIN, blueIntensity);
-}*/
 
 void modeChange()
 {
@@ -506,10 +463,14 @@ void modeChange()
     if (mode < numModes)
     {
       mode += 1;
+      pixelLoc_x = 0;
+      pixelLoc_y = 0;
     }
     else if (mode == numModes)
     {
         mode = 1;
+        pixelLoc_x = 0;
+        pixelLoc_y = 0;
     }
   }
   last_interrupt_time = interrupt_time;
