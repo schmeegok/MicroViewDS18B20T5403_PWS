@@ -10,7 +10,6 @@
 SoftwareSerial mySerial(0, 1); // RX, TX
 
 MicroViewWidget *widget1;
-int16_t prevVal; // previous widget value
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
@@ -110,6 +109,13 @@ void loop(void)
     degF_Out = sensors.getTempFByIndex(0);  // Device 1 is index 0
     
     // Get the pressure and temperature from the barometer
+    if (firstAltMeas == false)
+    {
+        baroTemp = barometer.getTemperature(FAHRENHEIT)/100.00;
+        absPress = barometer.getPressure(MODE_ULTRA);
+        delay(500);
+    }
+
     baroTemp = barometer.getTemperature(FAHRENHEIT)/100.00;
     absPress = barometer.getPressure(MODE_ULTRA);
 
