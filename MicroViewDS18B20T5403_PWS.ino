@@ -17,6 +17,15 @@ T5403 barometer(MODE_I2C);
 
 const byte button1Pin = 2; // pushbutton 1 pin
 
+const int button2Pin = A1;
+int button2State;             // the current reading from the input pin
+int lastButton2State = HIGH;   // the previous reading from the input pin
+// the following variables are unsigned long's because the time, measured in miliseconds,
+// will quickly become a bigger number than can be stored in an int.
+unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
+unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
+
+
 // RGB LED Pins
 const int RED_PIN   = 6; // Common Anode Pinout
 const int GREEN_PIN = 5; // Common Anode Pinout
@@ -93,6 +102,7 @@ void setup()
   
   // Set up the pushbutton pins to be an input:
   pinMode(button1Pin, INPUT_PULLUP);
+  pinMode(button2Pin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(button1Pin), modeChange, RISING);
   
   mode = altitudeMode;
@@ -102,6 +112,37 @@ void loop(void)
 {
     // put your main code here, to run repeatedly:
     int ledIntensity;
+
+    // read the state of the switch into a local variable:
+    int reading = digitalRead(button2Pin);
+
+    // If the switch changed, due to noise or pressing:
+    if (reading != lastButton2State) 
+    {
+        // reset the debouncing timer
+        lastDebounceTime = millis();
+    }
+    if ((millis() - lastDebounceTime) > debounceDelay) 
+    {
+        // whatever the reading is at, it's been there for longer
+        // than the debounce delay, so take it as the actual current state:
+
+        // if the button state has changed:
+        if (reading != button2State) 
+        {
+            button2State = reading;
+
+            // only toggle the LED if the new button state is HIGH
+            if (button2State == LOW) 
+            {
+                resetStatistics();
+            }
+        }
+     }
+     // save the reading.  Next time through the loop,
+     // it'll be the lastButtonState:
+     lastButton2State = reading;
+
     
     // Take a temperature every time
     // Take a temperature reading from the DS18B20 Sensor
@@ -456,6 +497,18 @@ void resetStatistics()
     firstAltMeas = false;
     pixelLoc_x = 0;
     pixelLoc_y = 0;
+
+    analogWrite(RED_PIN, 255);
+    analogWrite(BLUE_PIN, 0);
+    analogWrite(GREEN_PIN, 0);
+    delay(500);
+    analogWrite(RED_PIN, 0);
+    analogWrite(BLUE_PIN, 0);
+    analogWrite(GREEN_PIN, 255);
+    delay(500);
+    analogWrite(RED_PIN, 0);
+    analogWrite(BLUE_PIN, 255);
+    analogWrite(GREEN_PIN, 0);
 }
 
 void modeChange()
