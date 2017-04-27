@@ -35,9 +35,9 @@ const int BLUE_PIN  = 3; // Common Anode Pinout
 float degF_Out, maxDegF_Out, minDegF_Out;
 
 // Baro Variables
-double absPress;
+double absPress, relPress;
 float baroTemp, baroTempMax, baroTempMin;
-double baseAltitude_ft;
+double baseAltitude_ft, intvAltitude_ft;
 double altMax_ft, altMin_ft, alt_ft, altInitial_ft, altAvg_ft;
 bool firstAltMeas;
 
@@ -46,11 +46,13 @@ volatile byte mode = 1; // Variable to hold the display mode
 const byte altitudeMode    = 1;
 const byte outsideTempMode = 2;
 const byte baroTempMode    = 3;
-const byte lampMode        = 4;
-const byte darkMode        = 5;
-const byte numModes = 5;
+const byte baroPressMode   = 4;
+const byte lampMode        = 5;
+const byte darkMode        = 6;
+const byte numModes = 6;
 
 byte pixelLoc_x,pixelLoc_y;
+int loopCounter;
 
 void setup() 
 {
@@ -106,6 +108,7 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(button1Pin), modeChange, RISING);
   
   mode = altitudeMode;
+  loopCounter = 0;
 }
 
 void loop(void) 
@@ -160,12 +163,14 @@ void loop(void)
     baroTemp = barometer.getTemperature(FAHRENHEIT)/100.00;
     absPress = barometer.getPressure(MODE_ULTRA);
 
-    altAvg_ft = conv_m_to_ft(altitude(absPress,101325.000));
+    
+
+    altAvg_ft = conv_m_to_ft(altitude(absPress,100677.340)); //101325.000));
     for (int i=0; i<=8; i++)
     {
         barometer.getTemperature(FAHRENHEIT)/100.00; //Tossing out the temp for now, think you must do first though
         absPress = barometer.getPressure(MODE_ULTRA);
-        altAvg_ft += conv_m_to_ft(altitude(absPress,101325.000));   
+        altAvg_ft += conv_m_to_ft(altitude(absPress,100677.340));//101325.000));   
     }
     baseAltitude_ft = altAvg_ft/10.000;
     if (firstAltMeas == false)
@@ -173,6 +178,24 @@ void loop(void)
         altInitial_ft = baseAltitude_ft;
         firstAltMeas = true;
     }
+
+    // Only want to update this once in a while
+    if (loopCounter == 0)
+    {
+        intvAltitude_ft = baseAltitude_ft;
+        
+        loopCounter += 1;
+    }
+    else if (loopCounter < 100)
+    {
+        loopCounter += 1;
+    }
+    else
+    {
+        loopCounter = 0;
+    }
+
+    relPress = sealevel_inhg(absPress,conv_ft_to_m(intvAltitude_ft));
          
     // Update the maxs
     if (degF_Out > maxDegF_Out)
@@ -291,6 +314,59 @@ void loop(void)
             showTempRGB(baroTemp);
             break;
 
+        // Relative Pressure Mode: Display the barometric Pressure adjusted by altitude
+        case baroPressMode:
+            // Update the microview display
+            uView.clear(PAGE);
+            
+            // Write "Altitude, ft" at the top            
+            uView.setCursor(0, 0);
+            uView.setFontType(0);
+            uView.print(F("P, IN-HG"));
+
+            // Print the current Pressure Reading
+            uView.setCursor(0,10);
+            uView.setFontType(0);
+            uView.print(F("Pr: "));
+            //Works: uView.print((int16_t) relPress);
+            uView.print(relPress);
+            
+            // Print the loopCounter Value
+            uView.setCursor(0,20);
+            uView.setFontType(0);
+            uView.print(F("Lc: "));
+            uView.print((int16_t) loopCounter);
+            uView.print(F("/"));
+            uView.print((int16_t) 100);
+
+            /*
+            // Print the Max Pressure Reading
+            uView.setCursor(0,20);
+            uView.setFontType(0);
+            uView.print(F("Mx: "));
+            uView.print((int16_t) altMax_ft);
+
+            // Print the Min Altitude Reading
+            uView.setCursor(0,30);
+            uView.setFontType(0);
+            uView.print(F("Mn: "));
+            uView.print((int16_t) altMin_ft);
+
+            // Print the Delta Altitude Reading
+            uView.setCursor(0,40);
+            uView.setFontType(0);
+            uView.print(F("Ad: "));
+            uView.print((int16_t) (baseAltitude_ft - altInitial_ft));
+            */
+            
+            uView.display();
+
+            // Turn off the LED
+            analogWrite(RED_PIN, 0);
+            analogWrite(BLUE_PIN, 0);
+            analogWrite(GREEN_PIN, 0);
+            break;
+
         // Lamp Mode: Set the Lamp on and White
         case lampMode:
             // Update the microview display
@@ -336,6 +412,9 @@ void loop(void)
             break;
                     
     }// End Of Switch Case
+
+    loopCounter += 1;
+    
 }// End of Main
 
 // Update function for Temp Sensor Screen (Demo 12?)
@@ -491,6 +570,9 @@ void resetStatistics()
     minDegF_Out = 130;
     baroTempMax = -20;
     baroTempMin = 130;
+
+    intvAltitude_ft = 0;
+    loopCounter = 0;
 
     altMax_ft = 0;
     altMin_ft = 10000;
