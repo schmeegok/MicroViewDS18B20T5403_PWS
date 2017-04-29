@@ -18,6 +18,9 @@ T5403 barometer(MODE_I2C);
 const byte button1Pin = 2; // pushbutton 1 pin
 
 const int button2Pin = A1;
+const int potPin = A2;    // select the input pin for the potentiometer
+int potValue = 0;  // variable to store the value coming from the sensor
+
 int button2State;             // the current reading from the input pin
 int lastButton2State = HIGH;   // the previous reading from the input pin
 // the following variables are unsigned long's because the time, measured in miliseconds,
@@ -35,10 +38,10 @@ const int BLUE_PIN  = 3; // Common Anode Pinout
 float degF_Out, maxDegF_Out, minDegF_Out;
 
 // Baro Variables
-double absPress, relPress;
+double absPress, relPress, relPress_rt;
 float baroTemp, baroTempMax, baroTempMin;
 double baseAltitude_ft, intvAltitude_ft;
-double altMax_ft, altMin_ft, alt_ft, altInitial_ft, altAvg_ft;
+double altMax_ft, altMin_ft, alt_ft, altInitial_ft, altAvg_ft, alt_rt;
 bool firstAltMeas;
 
 volatile byte mode = 1; // Variable to hold the display mode
@@ -47,12 +50,17 @@ const byte altitudeMode    = 1;
 const byte outsideTempMode = 2;
 const byte baroTempMode    = 3;
 const byte baroPressMode   = 4;
-const byte lampMode        = 5;
-const byte darkMode        = 6;
-const byte numModes = 6;
+const byte calMode         = 5;
+const byte lampMode        = 6;
+const byte darkMode        = 7;
+const byte numModes = 7;
 
 byte pixelLoc_x,pixelLoc_y;
 int loopCounter;
+const int updateInterval = 120;
+
+//int16_t pressRef;
+long pressRef;
 
 void setup() 
 {
@@ -106,6 +114,9 @@ void setup()
   pinMode(button1Pin, INPUT_PULLUP);
   pinMode(button2Pin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(button1Pin), modeChange, RISING);
+
+  digitalWrite(potPin, HIGH);      // Internal Pull-up
+  pinMode(potPin, INPUT);          // make pin as INPUT
   
   mode = altitudeMode;
   loopCounter = 0;
@@ -146,6 +157,9 @@ void loop(void)
      // it'll be the lastButtonState:
      lastButton2State = reading;
 
+     // Read the potentiometer to adjust the reference pressure
+     potValue = analogRead(potPin);    // read sensorPin
+     pressRef = map(potValue,0,1023,94819,108364);
     
     // Take a temperature every time
     // Take a temperature reading from the DS18B20 Sensor
@@ -163,14 +177,15 @@ void loop(void)
     baroTemp = barometer.getTemperature(FAHRENHEIT)/100.00;
     absPress = barometer.getPressure(MODE_ULTRA);
 
-    
 
-    altAvg_ft = conv_m_to_ft(altitude(absPress,100677.340)); //101325.000));
+    altAvg_ft = conv_m_to_ft(altitude(absPress,pressRef));//100677.340)); //101325.000));
+    alt_rt = conv_m_to_ft(altitude(absPress,pressRef));
+    
     for (int i=0; i<=8; i++)
     {
         barometer.getTemperature(FAHRENHEIT)/100.00; //Tossing out the temp for now, think you must do first though
         absPress = barometer.getPressure(MODE_ULTRA);
-        altAvg_ft += conv_m_to_ft(altitude(absPress,100677.340));//101325.000));   
+        altAvg_ft += conv_m_to_ft(altitude(absPress,pressRef));//100677.340));//101325.000));   
     }
     baseAltitude_ft = altAvg_ft/10.000;
     if (firstAltMeas == false)
@@ -186,7 +201,7 @@ void loop(void)
         
         loopCounter += 1;
     }
-    else if (loopCounter < 100)
+    else if (loopCounter < updateInterval)
     {
         loopCounter += 1;
     }
@@ -196,7 +211,8 @@ void loop(void)
     }
 
     relPress = sealevel_inhg(absPress,conv_ft_to_m(intvAltitude_ft));
-         
+    relPress_rt = sealevel_inhg(absPress,conv_ft_to_m(baseAltitude_ft));
+    
     // Update the maxs
     if (degF_Out > maxDegF_Out)
     {
@@ -319,45 +335,23 @@ void loop(void)
             // Update the microview display
             uView.clear(PAGE);
             
-            // Write "Altitude, ft" at the top            
+            // Write "Pr, inHg" at the top            
             uView.setCursor(0, 0);
             uView.setFontType(0);
-            uView.print(F("P, IN-HG"));
+            uView.print(F("Pr, inHg"));
 
             // Print the current Pressure Reading
             uView.setCursor(0,10);
-            uView.setFontType(0);
             uView.print(F("Pr: "));
-            //Works: uView.print((int16_t) relPress);
             uView.print(relPress);
             
             // Print the loopCounter Value
-            uView.setCursor(0,20);
-            uView.setFontType(0);
-            uView.print(F("Lc: "));
-            uView.print((int16_t) loopCounter);
-            uView.print(F("/"));
-            uView.print((int16_t) 100);
-
-            /*
-            // Print the Max Pressure Reading
-            uView.setCursor(0,20);
-            uView.setFontType(0);
-            uView.print(F("Mx: "));
-            uView.print((int16_t) altMax_ft);
-
-            // Print the Min Altitude Reading
             uView.setCursor(0,30);
-            uView.setFontType(0);
-            uView.print(F("Mn: "));
-            uView.print((int16_t) altMin_ft);
-
-            // Print the Delta Altitude Reading
+            uView.print(F("Update"));
             uView.setCursor(0,40);
-            uView.setFontType(0);
-            uView.print(F("Ad: "));
-            uView.print((int16_t) (baseAltitude_ft - altInitial_ft));
-            */
+            uView.print(F("Delay:"));
+            uView.print((int) ((loopCounter/120.000)*100));
+            uView.print(F("%"));
             
             uView.display();
 
@@ -365,6 +359,43 @@ void loop(void)
             analogWrite(RED_PIN, 0);
             analogWrite(BLUE_PIN, 0);
             analogWrite(GREEN_PIN, 0);
+            break;
+
+        // Calibration Mode: Display the barometric Pressure adjusted by altitude
+        case calMode:
+            // Update the microview display
+            uView.clear(PAGE);
+            
+            // Write "Altitude, ft" at the top            
+            uView.setCursor(0, 0);
+            uView.setFontType(0);
+            uView.print(F("CAL:"));
+
+            // Print the current Pressure Reading
+            uView.setCursor(0,10);
+            uView.print(F("Pr: "));
+            uView.print(relPress);
+
+            // Print the pot value
+            uView.setCursor(0,20);
+            uView.print(F("Rf: "));
+            uView.print(pressRef);
+
+            // Print the pot value
+            uView.setCursor(0,30);
+            uView.print(F("Rp: "));
+            uView.print(relPress_rt);
+
+            uView.setCursor(0,40);
+            uView.print(F("Ra: "));
+            uView.print((int16_t)alt_rt);
+            
+            uView.display();
+
+            // Turn LED Yellow for Cal Mode
+            analogWrite(RED_PIN, 63);
+            analogWrite(BLUE_PIN, 63);
+            analogWrite(GREEN_PIN, 63);
             break;
 
         // Lamp Mode: Set the Lamp on and White
